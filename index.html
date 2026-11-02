@@ -78,6 +78,7 @@ li.t span.pts{color:var(--sub);font-size:15px}
       <div class="name"><input type="text" id="who" placeholder="이름을 입력하세요" maxlength="12" aria-label="학생 이름"></div>
       <div class="score"><span>내 점수</span><b id="score">0</b><span id="cnt" class="empty"></span></div>
       <p id="range" class="empty" style="margin:6px 0 0"></p>
+      <p id="conn" class="empty" style="margin:4px 0 0;font-size:14px"></p>
 
       <h2 style="margin-top:16px">세 수 입력</h2>
       <div class="abc">
@@ -112,7 +113,7 @@ li.t span.pts{color:var(--sub);font-size:15px}
         <label class="empty" for="qurl" style="font-size:14px">학생에게 줄 링크 (공유 링크로 바꿔도 돼요)</label>
         <input type="text" id="qurl" aria-label="학생 입장 링크">
         <button class="small" id="qbig" style="margin-top:8px">크게 보기</button>
-        <p class="empty" style="margin:8px 0 0;font-size:14px">학생은 공유 메뉴에서 Contributor(기여자) 권한으로 열어야 점수가 기록돼요. 이 선생님 화면은 편집 권한이 있는 계정에서만 보여요.</p>
+        <p class="empty" id="cnote" style="margin:8px 0 0;font-size:14px">학생은 공유 메뉴에서 Contributor(기여자) 권한으로 열어야 점수가 기록돼요. 이 선생님 화면은 편집 권한이 있는 계정에서만 보여요.</p>
       </div>
     </div>
     <div style="height:20px"></div>
@@ -182,8 +183,9 @@ li.t span.pts{color:var(--sub);font-size:15px}
     save();render();
     say(note+"정답! ("+p.join(", ")+") 발견! 기록하는 중…","ok");
     claim(p).then(function(first){
+      if(first!==null)confirmed[p.join("-")]=1;
       var s=sum(p),t=first?"최초 발견 보너스로 +"+s*2+"점!":"+"+s+"점";
-      say(note+"정답! ("+p.join(", ")+") 발견, "+t+(first===null?" ※ 선생님 화면에는 기록되지 않았어요.":""),"ok");
+      say(note+"정답! ("+p.join(", ")+") 발견, "+t+(first===null?" ※ 아직 기록되지 않았어요. 자동으로 다시 시도해요.":""),"ok");
       render();
     });
     ["a","b","c"].forEach(function(id){$(id).value=""});
@@ -240,7 +242,7 @@ li.t span.pts{color:var(--sub);font-size:15px}
       var last,first=true;
       function tick(){
         if(db!==api)return;
-        get().then(function(v){var s=JSON.stringify(v);if(first||s!==last){first=false;last=s;cb(v)}}).catch(function(e){if(err)err(e)}).then(function(){if(db===api)setTimeout(tick,3000)});
+        get().then(function(v){setConn(true);var s=JSON.stringify(v);if(first||s!==last){first=false;last=s;cb(v)}}).catch(function(e){setConn(false);if(err)err(e)}).then(function(){if(db===api)setTimeout(tick,3000)});
       }
       tick();
     }
@@ -263,10 +265,12 @@ li.t span.pts{color:var(--sub);font-size:15px}
     };
     return api;
   }
+  var DEFAULT_FB="https://pythagoras-number-game-default-rtdb.asia-southeast1.firebasedatabase.app";
   function fbBase(){
     var q="";
     try{q=new URLSearchParams(location.search).get("db")||""}catch(e){}
     if(!q){try{q=localStorage.getItem("pyth-fb")||""}catch(e){}}
+    if(!q)q=DEFAULT_FB;
     return normFb(q);
   }
   function normFb(u){u=String(u||"").trim().replace(/\/+$/,"");return /^https:\/\/[^\s\/]+$/.test(u)?u:""}
@@ -382,7 +386,26 @@ li.t span.pts{color:var(--sub);font-size:15px}
       st.textContent=" 리셋했어요.";
     }catch(e){st.textContent=" 리셋하지 못했어요"+(e&&e.message?" ("+e.message+")":"")+". 다시 눌러 주세요."}
   };
-  var noop=function(){},subsOn=false,tSubs=false;
+  var noop=function(){},subsOn=false,tSubs=false,confirmed={},syncing=false,cfgLoaded=false;
+  function setConn(ok){
+    var el=$("conn");if(!el)return;
+    if(!db){el.textContent="저장소에 연결되지 않았어요. 선생님께 말씀해 주세요.";el.style.color="var(--red)";return}
+    el.textContent=ok?"✓ 저장소 연결됨":"저장소 연결이 끊겼어요. 인터넷을 확인해 주세요.";
+    el.style.color=ok?"var(--ok)":"var(--red)";
+  }
+  // Retry any found triples that were not recorded yet (network hiccup, late connection)
+  function syncPending(){
+    if(!db||!cfgLoaded||syncing)return;
+    var todo=found.filter(function(t){return !confirmed[t.join("-")]});
+    if(!todo.length)return;
+    syncing=true;
+    (function next(i){
+      if(i>=todo.length){syncing=false;return}
+      var t=todo[i];
+      claim(t).then(function(r){if(r!==null){confirmed[t.join("-")]=1;render()}next(i+1)},function(){next(i+1)});
+    })(0);
+  }
+  setInterval(syncPending,6000);
   function startSubs(){
     if(!db||subsOn)return;subsOn=true;
     try{
@@ -393,7 +416,7 @@ li.t span.pts{color:var(--sub);font-size:15px}
       },function(){$("tlist").innerHTML='<li class="empty">기록을 불러오지 못했어요.</li>'});
       db.doc("config/main").onSnapshot(function(d){
         var c=d.exists?d.data():{};
-        cfg.min=c.min==null?null:c.min;cfg.max=c.max==null?null:c.max;cfg.epoch=c.epoch||0;
+        cfg.min=c.min==null?null:c.min;cfg.max=c.max==null?null:c.max;cfg.epoch=c.epoch||0;cfgLoaded=true;
         if(localEpoch!==cfg.epoch){var had=found.length>0;found=[];localEpoch=cfg.epoch;save();if(had)say("선생님이 활동을 리셋했어요. 처음부터 다시 시작해요!","ok")}
         render();
         if(teacher){
@@ -416,7 +439,9 @@ li.t span.pts{color:var(--sub);font-size:15px}
         if(user){try{meId=await user.id()}catch(e){}}
         if(db)$("fbblock").hidden=true;
       }
+      if(!window.claude)$("cnote").hidden=true;
       if(!db){var fu=fbBase();if(fu)db=makeFirebase(fu)}
+      if(!db)setConn(false);else if(window.claude)setConn(true);else $("conn").textContent="저장소 연결 중…";
       render();startSubs();
     }catch(e){}
   })();
